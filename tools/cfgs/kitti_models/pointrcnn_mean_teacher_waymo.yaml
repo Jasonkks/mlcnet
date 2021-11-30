@@ -1,0 +1,229 @@
+CLASS_NAMES: ['Car']
+CLASS_NAMES_TARGET: ['Vehicle']
+
+TAG: 'pointrcnnmt_kitti_to_waymo'
+
+OPTIMIZATION:
+    BATCH_SIZE_PER_GPU: 4
+    NUM_EPOCHS: 20
+
+    UPDATE_ROI_HEAD_ONLY: False
+
+    OPTIMIZER: adam_onecycle
+    LR: 0.0001
+    WEIGHT_DECAY: 0.01
+    MOMENTUM: 0.9
+
+    MOMS: [0.95, 0.85]
+    PCT_START: 1.0
+    DIV_FACTOR: 1
+    DECAY_STEP_LIST: [35, 45]
+    LR_DECAY: 0.1
+    LR_CLIP: 0.0000001
+
+    LR_WARMUP: False
+    WARMUP_EPOCH: 1
+
+    GRAD_NORM_CLIP: 10
+
+DATA_CONFIG:
+    _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset.yaml
+
+    DATA_PROCESSOR:
+        -   NAME: mask_points_and_boxes_outside_range
+            REMOVE_OUTSIDE_BOXES: True
+
+        -   NAME: sample_points
+            NUM_POINTS: {
+                'train': 16384,
+                'test': 16384
+            }
+
+        -   NAME: shuffle_points
+            SHUFFLE_ENABLED: {
+                'train': True,
+                'test': False
+            }
+
+DATA_CONFIG_TARGET:
+    _BASE_CONFIG_: cfgs/dataset_configs/waymo_dataset_mean_teacher_kitti_range.yaml
+
+    PROVIDE_GT: False # no gt for target domain
+
+    SAME_POINT_SAMPLING: True
+    AUGMENT_STUDENT: True
+    AUGMENT_TEACHER: False
+
+    DATA_PROCESSOR:
+        -   NAME: mask_points_and_boxes_outside_range
+            REMOVE_OUTSIDE_BOXES: True
+
+        -   NAME: filter_points_and_boxes_by_kitti_fov
+            TAN_THRESHOLD: 1.1615 # around 49 degrees
+
+        -   NAME: sample_points
+            NUM_POINTS: {
+                'train': 16384,
+                'test': 16384
+            }
+
+        -   NAME: shuffle_points
+            SHUFFLE_ENABLED: {
+                'train': True,
+                'test': False
+            }
+
+MODEL:
+    NAME: PointRCNNMeanTeacherMerge
+    
+    MERGE_SOURCE_TARGET: True
+
+    EMA_MODEL_ALPHA: 0.99
+    WARM_UP_EPOCH: 1
+
+    COPY_BN_STATS_TO_TEACHER: True
+    BN_EMA: 0.95
+    BN_WARM_UP: False
+    BN_EMA_DECAY: False
+    MIN_BN_EMA: 0.999
+
+    SOURCE_LOSS_WEIGHT: 0.1
+
+    CONSISTENCY_LOSS: {
+        'roi_cls_weight': 1.0,
+        'roi_reg_weight': 1.0,
+        'rcnn_cls_weight': 1.0,
+        'rcnn_reg_weight': 1.0,
+    }
+
+    RCNN_FILTER_BY_POSITIVE_ROIS: 5
+    RCNN_FILTER_IOU_THRESHOLD: 0.99
+
+    POST_PROCESSING:
+        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
+        SCORE_THRESH: 0.5
+        OUTPUT_RAW_SCORE: False
+
+        EVAL_METRIC: kitti
+
+        NMS_CONFIG:
+            MULTI_CLASSES_NMS: False
+            NMS_TYPE: nms_gpu
+            NMS_THRESH: 0.1
+            NMS_PRE_MAXSIZE: 4096
+            NMS_POST_MAXSIZE: 500
+
+
+    BACKBONE_3D:
+        NAME: PointNet2MSG
+        SA_CONFIG:
+            NPOINTS: [4096, 1024, 256, 64]
+            RADIUS: [[0.1, 0.5], [0.5, 1.0], [1.0, 2.0], [2.0, 4.0]]
+            NSAMPLE: [[16, 32], [16, 32], [16, 32], [16, 32]]
+            MLPS: [[[16, 16, 32], [32, 32, 64]],
+                   [[64, 64, 128], [64, 96, 128]],
+                   [[128, 196, 256], [128, 196, 256]],
+                   [[256, 256, 512], [256, 384, 512]]]
+        FP_MLPS: [[128, 128], [256, 256], [512, 512], [512, 512]]
+        KEEP_BOTTOM_FEATURE: True
+
+    POINT_HEAD:
+        NAME: PointHeadBoxMerge
+        CLS_FC: [256, 256]
+        REG_FC: [256, 256]
+        CLASS_AGNOSTIC: False
+        TARGET_CONFIG:
+            GT_EXTRA_WIDTH: [0.2, 0.2, 0.2]
+            BOX_CODER: PointResidualCoder
+            BOX_CODER_CONFIG: {
+                'use_mean_size': True,
+                'mean_size': [
+                    [3.9, 1.6, 1.56],
+                    [0.8, 0.6, 1.73],
+                    [1.76, 0.6, 1.73]
+                ]
+            }
+
+        LOSS_CONFIG:
+            LOSS_REG: WeightedSmoothL1Loss
+            LOSS_WEIGHTS: {
+                'point_cls_weight': 1.0,
+                'point_box_weight': 1.0,
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            }
+
+    ROI_HEAD:
+        NAME: PointRCNNHeadMTMerge
+        CLASS_AGNOSTIC: True
+
+        ROI_AUGMENTATION: True
+        ROI_AUGMENTATION_SCALE_RANGE: [0.9, 1.1]
+        ROI_AUGMENTATION_ROTATE_RANGE: [0, 0] 
+        SAME_SCALE_XYZ: True
+        AUGMENT_BOTH_STUDENT_AND_TEACHER: True
+
+        ROI_POINT_POOL:
+            POOL_EXTRA_WIDTH: [1.0, 1.0, 1.0]
+            NUM_SAMPLED_POINTS: 512
+            DEPTH_NORMALIZER: 70.0
+
+        XYZ_UP_LAYER: [128, 128]
+        CLS_FC: [256, 256]
+        REG_FC: [256, 256]
+        DP_RATIO: 0.0
+        USE_BN: False
+
+        SA_CONFIG:
+            NPOINTS: [128, 32, -1]
+            RADIUS: [0.2, 0.4, 100]
+            NSAMPLE: [16, 16, 16]
+            MLPS: [[128, 128, 128],
+                   [128, 128, 256],
+                   [256, 256, 512]]
+
+        NMS_CONFIG:
+            TRAIN:
+                NMS_TYPE: nms_gpu
+                MULTI_CLASSES_NMS: False
+                NMS_PRE_MAXSIZE: 9000
+                NMS_POST_MAXSIZE: 512
+                NMS_THRESH: 0.8
+            TRAIN_TARGET:
+                NMS_TYPE: nms_gpu
+                MULTI_CLASSES_NMS: False
+                NMS_PRE_MAXSIZE: 9000
+                NMS_POST_MAXSIZE: 128
+                NMS_THRESH: 0.8
+            TEST:
+                NMS_TYPE: nms_gpu
+                MULTI_CLASSES_NMS: False
+                NMS_PRE_MAXSIZE: 9000
+                NMS_POST_MAXSIZE: 100
+                NMS_THRESH: 0.85
+
+        TARGET_CONFIG:
+            BOX_CODER: ResidualCoder
+            ROI_PER_IMAGE: 128
+            FG_RATIO: 0.5
+
+            SAMPLE_ROI_BY_EACH_CLASS: True
+            CLS_SCORE_TYPE: cls
+
+            CLS_FG_THRESH: 0.6
+            CLS_BG_THRESH: 0.45
+            CLS_BG_THRESH_LO: 0.1
+            HARD_BG_RATIO: 0.8
+
+            REG_FG_THRESH: 0.55
+            # REG_FG_THRESH: 0.3
+
+        LOSS_CONFIG:
+            CLS_LOSS: BinaryCrossEntropy
+            REG_LOSS: smooth-l1
+            CORNER_LOSS_REGULARIZATION: True
+            LOSS_WEIGHTS: {
+                'rcnn_cls_weight': 1.0,
+                'rcnn_reg_weight': 1.0,
+                'rcnn_corner_weight': 1.0,
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            }

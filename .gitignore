@@ -1,0 +1,17 @@
+logs/
+*DS_Store
+scripts/
+**__pycache__**
+**build**
+**egg-info**
+**dist**
+*.pyc
+venv/
+*.idea/
+*.so
+*.pth
+*.pkl
+*.zip
+*.bin
+output/
+script.sh
