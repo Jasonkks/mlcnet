@@ -1,4 +1,4 @@
-## Implementation of Unsupervised Domain Adaptive 3D Detection with Multi-Level Consistency (ICCV2021)
+## Unsupervised Domain Adaptive 3D Detection with Multi-Level Consistency (ICCV2021)
 
 Paper Link: https://arxiv.org/abs/2107.11355
 
